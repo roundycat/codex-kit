@@ -11,7 +11,11 @@ git clone https://github.com/roundycat/codex-kit /tmp/codex-kit
 bash /tmp/codex-kit/setup.sh
 ```
 
-그다음 Codex를 실행하고(이미 켜져 있었으면 다시 실행) `$kickoff`.
+그다음 Codex를 실행하고(이미 켜져 있었으면 다시 실행) 첫 메시지로 타이머의 남은 시간을 함께 준다.
+
+```
+$kickoff 남은 시간 175분
+```
 
 | 옵션 | 설명 |
 |---|---|
@@ -21,7 +25,7 @@ bash /tmp/codex-kit/setup.sh
 | `--force` | 이미 설치된 스킬과 AGENTS.md의 키트 블록을 최신으로 교체 |
 | `[경로]` | 설치 대상 폴더 지정 (기본: 현재 git 루트) |
 
-여러 번 실행해도 결과가 같다. 과제 쪽 파일은 덮어쓰지 않는다.
+여러 번 실행해도 결과가 같다. 과제 쪽 파일은 덮어쓰지 않고, 이번 실행에서 만든 파일만 커밋한다.
 
 ## 설치되는 것
 
@@ -29,38 +33,57 @@ bash /tmp/codex-kit/setup.sh
 |---|---|
 | `AGENTS.md` | Codex가 세션마다 자동으로 읽는 작업 규칙. 과제에 이미 있으면 원문 끝에 덧붙임 |
 | `.agents/skills/` | `$kickoff` `$verify` `$cross-check` `$explain` `$handoff` `$wrap-up` |
-| `.agents/skills/verify/scripts/check.sh` | 문법·테스트·린트·타입·비밀키 점검을 한 번에 돌리고 `notes/VERIFY.md`에 기록 |
-| `notes/` | PROBLEM · PLAN · DECISIONS · VERIFY · HANDOFF 템플릿 (기존 파일은 건드리지 않음) |
+| `.agents/skills/verify/scripts/check.sh` | 문법·테스트·린트·타입·비밀값 점검을 한 번에 돌리고 `notes/VERIFY.md`에 기록 |
+| `notes/` | PROBLEM · PLAN · DECISIONS · VERIFY · REVIEW · HANDOFF 템플릿 (기존 파일은 건드리지 않음) |
 | `.gitignore` | 가상환경·캐시·`.env` 중 빠진 항목만 추가 |
-| `~/.codex/config.toml` | `openaiDeveloperDocs` MCP (OpenAI 공식 문서 읽기 전용) |
+| Codex 설정 | `codex mcp add`로 `openaiDeveloperDocs` 등록(OpenAI 공식 문서 읽기 전용). 명령이 없거나 실패하면 건너뛰고, 설정 파일을 직접 고치지 않는다 |
 
 설치 내용은 `chore:` 커밋 하나로 남는다. push는 하지 않는다.
+
+## AGENTS.md가 Codex에게 시키는 것
+
+- **시험 규칙**: 외부 전송·push 금지, 제공된 Codex 외 AI 금지, 모델 변경과 Astra 사용 금지(하위 에이전트 포함), 화면 자동 조작 금지, 설정 우회 금지, 검색어에 과제 내용 금지, 외부 코드는 일부만 참고하고 출처 기록
+- **결정권**: 요구사항 해석·성공 기준·범위·되돌리기 어려운 설계·삭제는 사용자가 정한다. Codex는 선택지와 추천안을 내고 기다린다. 나머지 구현 세부는 묻지 않고 진행한다
+- **실무자**: Codex는 실무자 채팅을 볼 수 없다. 질문 초안만 만들고, 사용자가 전한 답만 기록하며 지어내지 않는다
+- **범위**: 과제가 명시한 요구사항(R, 빠짐없이)과 측정 가능한 성공 기준(S, 3~5개)에 연결된 것만 만든다
+- **완료의 기준**: check.sh FAIL 없음 + 실제 실행 + R·S 대조 기록 + 커밋. 기대값을 바꿔 테스트를 통과시키지 않는다
+- **기록 보존**: amend·rebase·reset·stash·삭제는 사용자 요청 시에만. 커밋 기록이 평가와 인계의 근거다
+- **시간**: 종료 시각(한국 시간)을 PLAN.md에 두고 단계마다 남은 시간을 보고. 종료 20분 전부터 `$wrap-up`만
 
 ## 스킬
 
 | 스킬 | 언제 | 하는 일 |
 |---|---|---|
-| `$kickoff` | 시작 직후 | 정찰 → 실무자 인터뷰 질문 → 측정 가능한 성공 기준(`PROBLEM.md`) → 검증 가능한 단계(`PLAN.md`) |
-| `$verify` | 단계마다 | check.sh → 테스트 보강 → 실제 실행 → 성공 기준 대조 → 커밋 |
-| `$cross-check` | 약 90분, 제출 전 | 새 세션에서 독립 리뷰. 코드는 안 고치고 `REVIEW.md`에 발견만 기록 |
-| `$explain` | 큰 기능 후, 마무리 전 | 구조·결정·리스크(약점 → 영향 → 탐지 → 대응)를 `DECISIONS.md`에 정리하고 브리핑 |
-| `$handoff` | 맥락이 길어질 때 | `HANDOFF.md` 작성 → `/new` → "인계 받아서 이어서 진행" |
-| `$wrap-up` | 160분 | 기능 동결 → 최종 검증 → README → 문서 최신화 → 최종 커밋 → 브리핑 |
+| `$kickoff` | 시작 직후 | 종료 시각 → 정찰 → 요구사항(R) → 실무자 질문 초안 → 성공 기준(S) → 계획 → AGENTS.md "이 저장소" 절 |
+| `$verify` | 단계마다 | check.sh → 테스트 보강 → 실제 실행 → R·S 대조 → 커밋 |
+| `$cross-check` | 첫 E2E 뒤, 늦어도 종료 50분 전 | 맥락 없는 하위 에이전트(안 되면 `/new` 새 세션)가 독립 리뷰. 코드는 안 고치고 `REVIEW.md`에 기록 → 고칠 범위는 사용자가 결정 |
+| `$explain` | 큰 기능 후, 늦어도 종료 30분 전 | 구조·결정·리스크(어디가 → 왜 위험 → 탐지 → 대응)를 `DECISIONS.md`에 정리하고 브리핑 |
+| `$handoff` | 맥락이 길어질 때 | 시각·기준 커밋과 함께 `HANDOFF.md` 작성 → `/new` → "인계 받아서 이어서 진행" |
+| `$wrap-up` | 종료 20분 전 | 기능 동결 → R·제출 조건 대조 → 최종 검증 → README → 기록 최신화 → 최종 커밋 → 브리핑 |
 
-## 당일 흐름 (과제 180분 기준)
+## 당일 흐름
 
-| 경과 | 할 일 | 입력 |
+| 시점 | 할 일 | 입력 |
 |---|---|---|
+| 0분 | 사전 체험에서 키트 사용을 확인하지 못했다면 Cofa Helper에 먼저 확인 | — |
 | 0–3분 | 키트 설치, Codex 실행 | (터미널) clone + setup.sh |
-| 3–25분 | 정찰 → 실무자 인터뷰 → 문제 정의·계획 | `$kickoff` → 인터뷰 답을 Codex에 전달 |
-| 25–140분 | 단계 구현 → 검증 → 커밋 반복 | "PLAN 1단계 진행" → `$verify` |
+| 3–25분 | 정찰 → 요구사항 → 실무자 인터뷰 → 성공 기준·계획 확정 | `$kickoff 남은 시간 N분` → 실무자 답 전달 → S·계획 확인 |
+| 25분~ | 단계 구현 → 검증 → 커밋 반복 | "PLAN n단계 진행. 내 예상: …" → `$verify` |
+| 수시 | 실무자 채팅에 새 요구가 오면 전달 | "실무자가 …라고 함. 문서부터 반영" |
 | 맥락이 길 때 | 인계 후 새 세션 | `$handoff` → `/new` → "인계 받아서 이어서 진행" |
-| 약 90분 | 독립 리뷰 후 H 항목 수정 | 새 터미널에서 `codex` → `$cross-check` |
-| 140–160분 | 구조·결정·리스크 정리 | `$explain` |
-| 160–175분 | 기능 동결, 최종 검증·README·커밋 | `$wrap-up` |
-| 175–180분 | `notes/DECISIONS.md` 리스크 표와 브리핑을 **직접** 읽기 | — |
+| 첫 E2E 뒤 | 독립 리뷰 → 고칠 범위 결정 | `$cross-check` |
+| 종료 30분 전까지 | 구조·결정·리스크 정리 | `$explain` |
+| 종료 20분 전 | 기능 동결, 최종 검증·README·커밋 | `$wrap-up` |
+| 제출 직전 | 브리핑과 `notes/DECISIONS.md` 리스크 표를 직접 읽고 제출 | — |
 
-시간이 밀리면 기능을 줄이고 `$wrap-up`의 20분은 지킨다.
+시간이 밀리면 기능을 줄이고 마지막 20분은 지킨다.
+
+## 사람이 할 일 (Codex가 대신할 수 없는 것)
+
+- **예상을 먼저 말하기**: 단계를 시킬 때 "내 예상: …" "걱정: …"을 한 줄 붙인다. Codex가 결과와 대조해 준다.
+- **실무자와는 내 말로**: Codex가 준 질문·확인 메시지는 초안이다. 다듬어서 직접 보낸다.
+- **결정은 이유와 함께**: Codex가 선택지를 내면 고른 이유를 한 줄 적어 답한다.
+- **모델은 그대로**: `/model`에서 Astra 계열을 고르지 않는다. 안내문의 권장 모델을 쓴다.
 
 ## 후속 서술형 (6문항 × 5분, AI 없이)
 
@@ -69,9 +92,9 @@ bash /tmp/codex-kit/setup.sh
 
 ## 안내문 기준 규칙
 
-- 과제 AI는 제공된 Codex만. 다른 모델·서비스 연결 금지
+- 과제 AI는 제공된 Codex만. 다른 모델·서비스 연결 금지, Astra 모델 사용 제한
 - 문제·파일·결과물 외부 전송 금지, git push 금지
-- Computer Use(자동 조작), 감독·보안 설정 우회 금지
+- Computer Use(자동 조작), 감독·보안 기능 해제, 차단을 피하려는 도구·경로·설정 변경 금지
 - 공개 Skill·MCP·Plugin과 GitHub 공개 도구는 허용. 외부 코드는 일부 참고만
 - 서술형은 AI·복사·붙여넣기 없이 직접
 
@@ -82,24 +105,28 @@ bash /tmp/codex-kit/setup.sh
 1. 터미널에서 clone이 되는지 (GitHub 접근)
 2. `bash /tmp/codex-kit/setup.sh` 출력에 `[error]`가 없는지
 3. Codex에서 `$`를 입력하면 스킬 6개가 보이는지, `/mcp`에 `openaiDeveloperDocs`가 보이는지
-4. Cofa Helper에 확인: "직접 만든 공개 GitHub 레포(작업 규칙·스킬 키트, 풀이 코드 없음)를 clone해서 써도 되나요?"
-5. 허용이 애매하면 키트 없이 진행: Codex 기본 스킬 `$skill-creator`로 필요한 스킬을 즉석에서 만들고, AGENTS.md는 짧게 직접 작성
+4. `/model`에 보이는 모델 이름과 안내문의 권장 모델 확인
+5. Cofa Helper에 확인: "직접 만든 공개 GitHub 레포(작업 규칙·스킬 키트, 풀이 코드 없음)를 clone해서 써도 되나요?"
+6. 허용이 애매하면 키트 없이 진행: Codex 기본 스킬 `$skill-creator`로 필요한 스킬을 즉석에서 만들고, AGENTS.md는 짧게 직접 작성
 
 ## 문제 해결
 
 | 증상 | 조치 |
 |---|---|
 | 스킬이 안 보임 | Codex 재시작. 과제 폴더(저장소 루트)에서 Codex를 실행했는지, `.agents/skills/<이름>/SKILL.md`가 있는지 확인 |
-| MCP 연결 실패 | 무시하고 진행해도 된다(웹 검색으로 대체). 다시 하려면 Codex 재시작 후 `/mcp` |
+| `$`로 스킬을 부를 수 없는 화면 | "kickoff 스킬(`.agents/skills/kickoff/SKILL.md`)을 읽고 그대로 수행해"처럼 경로로 지시 |
+| MCP 등록 건너뜀·실패 | 무시하고 진행해도 된다. 문서 조회는 Codex 내장 `openai-docs` 스킬로 된다 |
+| `AGENTS.override.md` 경고 | 주최 측 파일이 있어 키트 규칙이 자동으로 읽히지 않는다. 첫 메시지에 "AGENTS.md도 읽고 그 규칙을 따라 줘"를 함께 입력 |
+| "git 저장소가 아닌 … 에서 실행했다" | 과제 폴더로 `cd` 한 뒤 다시 실행하거나 `bash /tmp/codex-kit/setup.sh <과제 폴더>` |
+| "git이 이 폴더를 읽지 못했다" (dubious ownership 등) | 과제 폴더가 맞는지 확인하고, git이 출력한 안내를 볼 것. 애매하면 Cofa Helper에 문의 |
 | 커밋 실패 (작성자 정보 없음) | setup.sh가 이 저장소에만 `candidate`로 설정한다. 그래도 실패하면 `git status` 확인 |
 | `AGENTS.md`가 크다는 경고 | 과제 쪽 AGENTS.md가 큰 경우. Codex 기본 한도는 32KiB라 뒷부분(키트 규칙)이 잘릴 수 있다 |
-| git 저장소가 아니라는 경고 | 커밋 기록이 필요하면 `bash /tmp/codex-kit/setup.sh --git-init` |
 
 ## 구성
 
 ```
 setup.sh                     설치 스크립트
-kit/AGENTS.md                작업 규칙 (<!-- codex-kit:start/end --> 블록)
+kit/AGENTS.md                작업 규칙 (<!-- codex-kit:start/end --> 블록) + "이 저장소" 절
 kit/.agents/skills/*/SKILL.md
 kit/.agents/skills/verify/scripts/check.sh
 kit/notes/*.md               기록 템플릿

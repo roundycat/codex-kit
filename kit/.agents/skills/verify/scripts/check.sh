@@ -4,7 +4,7 @@
 #   --build   package.json의 build 스크립트도 실행한다
 #   --no-log  notes/VERIFY.md에 기록하지 않는다
 # 종료 코드: FAIL이 하나라도 있으면 1, 없으면 0
-# 환경 변수: CHECK_TIMEOUT = 점검 하나당 제한 시간(초, 기본 600)
+# 환경 변수: CHECK_TIMEOUT = 점검 하나당 제한 시간(초, 기본 180)
 set -uo pipefail
 
 BUILD=0
@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$ROOT" || exit 2
 
-LIMIT="${CHECK_TIMEOUT:-600}"
+LIMIT="${CHECK_TIMEOUT:-180}"
 export CI=true                  # 테스트 러너가 watch 모드로 멈추지 않게
 export PYTHONDONTWRITEBYTECODE=1
 TMPD="$(mktemp -d)"
@@ -32,9 +32,13 @@ trap 'rm -rf "$TMPD"' EXIT
 IN_GIT=0
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then IN_GIT=1; fi
 
+# 가상환경이 있으면 그 파이썬을 쓴다(Codex 명령은 매번 새 셸이라 activate가 유지되지 않는다)
 PY=""
-for c in python3 python; do
-  if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+for c in ${VIRTUAL_ENV:+"$VIRTUAL_ENV/bin/python"} .venv/bin/python venv/bin/python python3 python; do
+  case "$c" in
+    */*) if [ -x "$c" ]; then PY="$c"; break; fi ;;
+    *) if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi ;;
+  esac
 done
 
 PRUNE=(-name .git)
@@ -64,14 +68,17 @@ add() {
   esac
 }
 keep_log() { FAILED+=("$1"$'\t'"$2"); }
-run() { # run <출력 파일> <명령...>
+run() { # run <출력 파일> <명령...>  (TERM을 무시하는 프로세스는 5초 뒤 KILL)
   local out="$1"
   shift
-  timeout "$LIMIT" "$@" >"$out" 2>&1
+  timeout -k 5 "$LIMIT" "$@" >"$out" 2>&1
   local rc=$?
-  if [ "$rc" -eq 124 ]; then echo "(시간 초과: ${LIMIT}초)" >>"$out"; fi
+  case "$rc" in
+    124|137) echo "(시간 초과: ${LIMIT}초. 늘리려면 CHECK_TIMEOUT=600)" >>"$out" ;;
+  esac
   return "$rc"
 }
+rc_desc() { case "$1" in 124|137) echo "시간 초과(${LIMIT}초)" ;; *) echo "exit $1" ;; esac; }
 safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '_'; }
 
 LANG_FOUND=0
@@ -117,7 +124,7 @@ PYEOF
     if [ "$rc" -eq 0 ]; then
       add PASS py-syntax "$summary"
     else
-      add FAIL py-syntax "${summary:-exit $rc}"
+      add FAIL py-syntax "${summary:-$(rc_desc "$rc")}"
       keep_log py-syntax "$out"
     fi
 
@@ -129,13 +136,13 @@ PYEOF
       out="$TMPD/pytest"
       PYTEST_IGNORE=()
       for v in ${VENV_DIRS[@]+"${VENV_DIRS[@]}"}; do PYTEST_IGNORE+=("--ignore=$v"); done
-      run "$out" "$PY" -m pytest -q -p no:cacheprovider ${PYTEST_IGNORE[@]+"${PYTEST_IGNORE[@]}"}
+      run "$out" "$PY" -m pytest -q -p no:cacheprovider ${PYTEST_IGNORE[@]+"${PYTEST_IGNORE[@]}"} </dev/null
       rc=$?
       summary="$(grep -E '[0-9]+ (passed|failed|errors?|skipped)|no tests ran' "$out" | tail -n 1 | tr -d '=' | sed 's/^ *//; s/ *$//')"
       case "$rc" in
         0) add PASS pytest "${summary:-ok}" ;;
         5) add WARN pytest "수집된 테스트 없음" ;;
-        *) add FAIL pytest "${summary:-exit $rc}"; keep_log pytest "$out" ;;
+        *) add FAIL pytest "${summary:-$(rc_desc "$rc")}"; keep_log pytest "$out" ;;
       esac
     fi
 
@@ -154,7 +161,7 @@ PYEOF
         RUFF_EXCLUDE=(--extend-exclude "$(IFS=,; echo "${VENV_DIRS[*]}")")
       fi
       run "$out" "${RUFF[@]}" check --no-cache ${RUFF_EXCLUDE[@]+"${RUFF_EXCLUDE[@]}"} \
-        --select E9,F63,F7,F82 --output-format concise .
+        --select E9,F63,F7,F82 --output-format concise . </dev/null
       rc=$?
       n="$(grep -cE ':[0-9]+:[0-9]+: ' "$out")"
       case "$rc" in
@@ -209,15 +216,15 @@ if [ ${#PKG_DIRS[@]} -gt 0 ]; then
       for s in $scripts; do
         if [ "$s" = "build" ] && [ "$BUILD" -eq 0 ]; then continue; fi
         out="$TMPD/$(safe_name "$label-$s")"
-        run "$out" npm --prefix "$d" run -s "$s"
+        run "$out" npm --prefix "$d" run -s "$s" </dev/null
         rc=$?
         if [ "$rc" -eq 0 ]; then
           add PASS "$label $s" "npm run $s"
         elif [ "$s" = "lint" ]; then
-          add WARN "$label $s" "npm run lint 실패(exit $rc)"
+          add WARN "$label $s" "npm run lint 실패($(rc_desc "$rc"))"
           keep_log "$label $s" "$out"
         else
-          add FAIL "$label $s" "npm run $s 실패(exit $rc)"
+          add FAIL "$label $s" "npm run $s 실패($(rc_desc "$rc"))"
           keep_log "$label $s" "$out"
         fi
       done
@@ -226,7 +233,7 @@ if [ ${#PKG_DIRS[@]} -gt 0 ]; then
         *)
           if [ -f "$d/tsconfig.json" ] && [ -x "$d/node_modules/.bin/tsc" ]; then
             out="$TMPD/$(safe_name "$label-tsc")"
-            run "$out" "$d/node_modules/.bin/tsc" --noEmit -p "$d"
+            run "$out" "$d/node_modules/.bin/tsc" --noEmit -p "$d" </dev/null
             rc=$?
             if [ "$rc" -eq 0 ]; then
               add PASS "$label tsc" "타입 오류 없음"
@@ -248,12 +255,12 @@ if [ -f go.mod ]; then
     add SKIP go "go 없음"
   else
     out="$TMPD/go-test"
-    run "$out" go test ./...
+    run "$out" go test ./... </dev/null
     rc=$?
     if [ "$rc" -eq 0 ]; then
       add PASS go-test "go test ./..."
     else
-      add FAIL go-test "go test 실패(exit $rc)"
+      add FAIL go-test "go test 실패($(rc_desc "$rc"))"
       keep_log go-test "$out"
     fi
   fi
@@ -263,12 +270,15 @@ if [ "$LANG_FOUND" -eq 0 ]; then
   add INFO lang "Python/Node/Go 프로젝트를 찾지 못함: 프로젝트의 테스트 명령을 직접 실행할 것"
 fi
 
-# ---------- 비밀키 노출 ----------
-STRONG='sk-(proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+# ---------- 비밀값 노출 ----------
+# 실제 키 형태만 FAIL로 본다. 앞에 영문·숫자·_·-가 붙은 경우(task-..., sk-hynix-... 등)는 키가 아니다.
+STRONG='(^|[^A-Za-z0-9_-])sk-([A-Za-z0-9]{32,}|(proj|svcacct|admin|ant)-[A-Za-z0-9_-]{40,})|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
 GENERIC="(api[_-]?key|secret|token|passw(or)?d)[\"']?[[:space:]]*[:=][[:space:]]*[\"'][A-Za-z0-9_./+=-]{16,}[\"']"
-GG_EXCLUDE=(':(exclude).agents' ':(exclude)*.lock' ':(exclude)*-lock.json' ':(exclude)*.min.js')
+# .env 파일은 비밀값을 두는 정상 위치라 내용 검사에서 빼고, 커밋 여부만 아래 env-file에서 본다
+GG_EXCLUDE=(':(exclude).agents' ':(exclude)*.lock' ':(exclude)*-lock.json' ':(exclude)*.min.js'
+            ':(exclude,glob)**/.env' ':(exclude,glob)**/.env.*')
 GREP_EXCLUDE=(--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv --exclude-dir=venv
-              --exclude-dir=__pycache__ --exclude-dir=.agents)
+              --exclude-dir=__pycache__ --exclude-dir=.agents --exclude=.env --exclude='.env.*')
 for v in ${VENV_DIRS[@]+"${VENV_DIRS[@]}"}; do
   GG_EXCLUDE+=(":(exclude)$v")
   GREP_EXCLUDE+=("--exclude-dir=$(basename "$v")")
@@ -277,14 +287,35 @@ scan() { # scan <정규식> [grep 옵션...] → "파일:줄" 목록 (값은 출
   local re="$1"
   shift
   if [ "$IN_GIT" -eq 1 ]; then
-    git grep --untracked -I -n -E "$@" -e "$re" -- . "${GG_EXCLUDE[@]}" 2>/dev/null | cut -d: -f1,2
+    # --untracked만 쓰면 .gitignore에 걸린 추적 파일을 건너뛰므로 추적 파일 검사를 따로 한다
+    {
+      git grep -I -n -E "$@" -e "$re" -- . "${GG_EXCLUDE[@]}" 2>/dev/null
+      git grep --untracked -I -n -E "$@" -e "$re" -- . "${GG_EXCLUDE[@]}" 2>/dev/null
+    } | cut -d: -f1,2 | sort -u
   else
-    grep -rIn -E "$@" "${GREP_EXCLUDE[@]}" -e "$re" . 2>/dev/null | cut -d: -f1,2
+    grep -rIn -E "$@" "${GREP_EXCLUDE[@]}" -e "$re" . 2>/dev/null | cut -d: -f1,2 | sed 's|^\./||' | sort -u
   fi
 }
-hits="$(scan "$STRONG" | head -n 10 | tr '\n' ' ')"
-if [ -n "$hits" ]; then
-  add FAIL secrets "키 형태 문자열 발견(값은 숨김): $hits"
+# 첫 커밋(과제 제공 상태)에 이미 있던 키는 과제 쪽 파일이므로 WARN으로 낮춘다
+FIRST_COMMIT=""
+if [ "$IN_GIT" -eq 1 ]; then
+  FIRST_COMMIT="$(git rev-list --max-parents=0 HEAD 2>/dev/null | tail -n 1)"
+fi
+given_by_task() { # given_by_task <파일>
+  [ -n "$FIRST_COMMIT" ] || return 1
+  git cat-file -e "$FIRST_COMMIT:$1" 2>/dev/null || return 1
+  git show "$FIRST_COMMIT:$1" 2>/dev/null | grep -qE -e "$STRONG"
+}
+new_hits=()
+old_hits=()
+while IFS= read -r h; do
+  [ -n "$h" ] || continue
+  if given_by_task "${h%%:*}"; then old_hits+=("$h"); else new_hits+=("$h"); fi
+done < <(scan "$STRONG")
+if [ ${#new_hits[@]} -gt 0 ]; then
+  add FAIL secrets "키 형태 문자열(값은 숨김): ${new_hits[*]:0:10} → 코드에서 빼고 환경 변수로 읽을 것"
+elif [ ${#old_hits[@]} -gt 0 ]; then
+  add WARN secrets "과제 제공 파일에 원래 있던 키 형태 문자열: ${old_hits[*]:0:10} (그대로 둔다)"
 else
   ghits="$(scan "$GENERIC" -i | head -n 10 | tr '\n' ' ')"
   if [ -n "$ghits" ]; then
@@ -296,7 +327,7 @@ fi
 if [ "$IN_GIT" -eq 1 ]; then
   envs="$(git ls-files -- '.env' '*/.env' '.env.*' '*/.env.*' 2>/dev/null | grep -vE '\.(example|sample|template)$' | head -n 5 | tr '\n' ' ')"
   if [ -n "$envs" ]; then
-    add FAIL env-file "커밋된 환경 파일: $envs→ git rm --cached <파일>"
+    add WARN env-file "추적 중인 환경 파일: $envs(과제가 준 파일이면 그대로 두고, 직접 커밋한 것이면 사용자에게 알린다)"
   fi
 fi
 
@@ -313,7 +344,7 @@ if [ "$IN_GIT" -eq 1 ]; then
 fi
 
 # ---------- 요약 ----------
-STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+STAMP="$(TZ=KST-9 date '+%Y-%m-%d %H:%M:%S KST')"
 echo
 echo "== check.sh  $STAMP  HEAD $HEAD_ID =="
 for r in ${ROWS[@]+"${ROWS[@]}"}; do

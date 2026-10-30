@@ -22,14 +22,14 @@ usage() {
   cat <<'EOF'
 사용: bash setup.sh [옵션] [설치 경로]
 
-설치 경로를 생략하면 현재 git 저장소의 루트(git이 아니면 현재 폴더)에 설치한다.
-과제 폴더에서 실행할 것. 몇 번 실행해도 결과가 같다.
+설치 경로를 생략하면 현재 git 저장소의 루트에 설치한다.
+과제 폴더에서 실행할 것. 몇 번 실행해도 결과가 같고, 과제 쪽 파일은 덮어쓰지 않는다.
 
 옵션
   --no-mcp     OpenAI Docs MCP 등록을 건너뛴다
   --no-commit  설치한 파일을 자동 커밋하지 않는다
   --git-init   git 저장소가 아니면 새로 만든다
-  --force      이미 설치된 키트 스킬과 AGENTS.md의 키트 블록을 최신으로 덮어쓴다
+  --force      이미 설치된 키트 스킬과 AGENTS.md의 키트 블록을 최신으로 바꾼다
   -h, --help   이 도움말
 EOF
 }
@@ -55,8 +55,20 @@ done
 [ -f "$SRC/AGENTS.md" ] && [ -d "$SRC/.agents/skills" ] && [ -d "$SRC/notes" ] \
   || die "키트 파일이 없다: $SRC (clone이 끝까지 됐는지 확인)"
 
+# ---------- 설치 위치 ----------
 if [ -z "$TARGET" ]; then
-  TARGET="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  if top="$(LC_ALL=C git rev-parse --show-toplevel 2>&1)"; then
+    TARGET="$top"
+  elif grep -qi 'not a git repository' <<<"$top"; then
+    here="$(pwd -P)"
+    case "$here" in
+      /|/tmp|"$(cd "$HOME" 2>/dev/null && pwd -P)")
+        die "git 저장소가 아닌 $here 에서 실행했다. 과제 폴더로 이동한 뒤 다시 실행하거나 경로를 지정: bash $KIT_DIR/setup.sh <과제 폴더>" ;;
+    esac
+    TARGET="$here"
+  else
+    die "git이 이 폴더를 읽지 못했다. 과제 폴더가 맞는지 확인할 것. git의 메시지: $(head -n 3 <<<"$top" | tr '\n' ' ')"
+  fi
 fi
 [ -d "$TARGET" ] || die "설치 경로가 없다: $TARGET"
 TARGET="$(cd "$TARGET" && pwd -P)"
@@ -75,6 +87,8 @@ if ! in_git && [ "$DO_GIT_INIT" -eq 1 ]; then
   ok "git init"
 fi
 
+WRITTEN=()   # 이번 실행에서 만들거나 바꾼 경로(설치 폴더 기준). 이것만 커밋한다.
+
 # ---------- 1. 스킬 ----------
 echo "[1/5] 스킬 (.agents/skills)"
 mkdir -p "$TARGET/.agents/skills"
@@ -87,6 +101,7 @@ for dir in "$SRC/.agents/skills"/*/; do
   fi
   rm -rf "$dest"
   cp -R "$SRC/.agents/skills/$name" "$dest"
+  WRITTEN+=(".agents/skills/$name")
   ok "\$$name"
 done
 chmod +x "$TARGET/.agents/skills/verify/scripts/check.sh" 2>/dev/null || true
@@ -94,35 +109,42 @@ chmod +x "$TARGET/.agents/skills/verify/scripts/check.sh" 2>/dev/null || true
 # ---------- 2. AGENTS.md ----------
 echo "[2/5] AGENTS.md"
 agents_file="$TARGET/AGENTS.md"
+OVERRIDE=0
 if [ -s "$TARGET/AGENTS.override.md" ]; then
-  agents_file="$TARGET/AGENTS.override.md"
-  warn "AGENTS.override.md가 있으면 Codex는 같은 폴더의 AGENTS.md를 읽지 않는다 → 키트 규칙을 AGENTS.override.md 끝에 붙인다"
+  OVERRIDE=1
+  warn "AGENTS.override.md가 있다. Codex는 이 폴더의 AGENTS.md 대신 그 파일을 읽는다. override는 건드리지 않고 키트 규칙은 AGENTS.md에 둔다"
 fi
-agents_name="$(basename "$agents_file")"
 if [ ! -e "$agents_file" ]; then
   cp "$SRC/AGENTS.md" "$agents_file"
-  ok "$agents_name 생성"
-elif grep -qF "$MARK_START" "$agents_file"; then
-  if [ "$FORCE" -eq 1 ]; then
+  WRITTEN+=("AGENTS.md")
+  ok "AGENTS.md 생성"
+elif grep -qxF "$MARK_START" "$agents_file"; then
+  if [ "$FORCE" -eq 0 ]; then
+    skip "AGENTS.md에 키트 블록이 이미 있음 (최신으로 바꾸려면 --force)"
+  elif ! awk -v s="$MARK_START" -v e="$MARK_END" '$0 == s { a = 1 } a && $0 == e { found = 1 } END { exit !found }' "$agents_file"; then
+    warn "AGENTS.md에 키트 블록의 끝 표시($MARK_END)가 없어 교체하지 않았다. 직접 확인할 것"
+  else
+    block="$(mktemp)"
     tmp="$(mktemp)"
-    awk -v s="$MARK_START" -v e="$MARK_END" -v f="$SRC/AGENTS.md" '
-      $0 == s { while ((getline line < f) > 0) print line; close(f); skipping = 1; next }
-      $0 == e { skipping = 0; next }
+    awk -v s="$MARK_START" -v e="$MARK_END" '$0 == s { p = 1 } p { print } p && $0 == e { exit }' "$SRC/AGENTS.md" >"$block"
+    awk -v s="$MARK_START" -v e="$MARK_END" -v f="$block" '
+      !done && $0 == s { while ((getline line < f) > 0) print line; close(f); skipping = 1; next }
+      skipping && $0 == e { skipping = 0; done = 1; next }
       !skipping { print }
     ' "$agents_file" >"$tmp"
     cat "$tmp" >"$agents_file"
-    rm -f "$tmp"
-    ok "$agents_name 안의 키트 블록을 최신으로 교체 (나머지 내용 유지)"
-  else
-    skip "$agents_name에 키트 블록이 이미 있음 (최신으로 바꾸려면 --force)"
+    rm -f "$tmp" "$block"
+    WRITTEN+=("AGENTS.md")
+    ok "AGENTS.md의 키트 블록만 최신으로 교체 (나머지 내용 유지)"
   fi
 else
   { printf '\n'; cat "$SRC/AGENTS.md"; } >>"$agents_file"
-  ok "기존 $agents_name 원문은 그대로 두고 끝에 키트 규칙 추가"
+  WRITTEN+=("AGENTS.md")
+  ok "기존 AGENTS.md 원문은 그대로 두고 끝에 키트 규칙 추가"
 fi
 size="$(wc -c <"$agents_file" | tr -d ' ')"
 if [ "$size" -gt 28000 ]; then
-  warn "$agents_name가 ${size}바이트다. Codex의 기본 읽기 한도(32KiB)에 가까워 뒷부분이 잘릴 수 있다"
+  warn "AGENTS.md가 ${size}바이트다. Codex의 기본 읽기 한도(32KiB)에 가까워 뒷부분이 잘릴 수 있다"
 fi
 
 # ---------- 3. notes 템플릿 ----------
@@ -134,6 +156,7 @@ for f in "$SRC/notes"/*.md; do
     skip "notes/$name 이미 있음"
   else
     cp "$f" "$TARGET/notes/$name"
+    WRITTEN+=("notes/$name")
     ok "notes/$name"
   fi
 done
@@ -159,54 +182,38 @@ else
     printf '# codex-kit: 가상환경, 캐시, 비밀 설정\n'
     printf '%s\n' "${missing[@]}"
   } >>"$gi"
+  WRITTEN+=(".gitignore")
   ok "추가: ${missing[*]}"
 fi
 
 # ---------- 5. OpenAI Docs MCP ----------
+# 등록은 공식 명령(codex mcp add)으로만 한다. 설정 파일은 직접 고치지 않는다.
 echo "[5/5] OpenAI Docs MCP ($MCP_NAME)"
 if [ "$DO_MCP" -eq 0 ]; then
   skip "--no-mcp"
 else
-  cfg_dir="${CODEX_HOME:-$HOME/.codex}"
-  cfg="$cfg_dir/config.toml"
-  mkdir -p "$cfg_dir" 2>/dev/null || true   # CODEX_HOME 폴더가 없으면 codex mcp add가 실패한다
-  has_codex=0
-  if command -v codex >/dev/null 2>&1; then has_codex=1; fi
+  cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
   in_config() {
     [ -f "$cfg" ] && grep -Eq "^[[:space:]]*\[[[:space:]]*mcp_servers\.\"?$MCP_NAME\"?[[:space:]]*\]" "$cfg"
   }
   in_codex_list() {
-    [ "$has_codex" -eq 1 ] || return 1
     local listed
-    listed="$(timeout 30 codex mcp list </dev/null 2>/dev/null || true)"
+    listed="$(timeout 15 codex mcp list </dev/null 2>/dev/null || true)"
     grep -qF "$MCP_NAME" <<<"$listed"
   }
-  append_mcp_table() {
-    mkdir -p "$cfg_dir" 2>/dev/null || return 1
-    local sep=''
-    if [ -s "$cfg" ]; then sep=$'\n'; fi
-    printf '%s[mcp_servers.%s]\nurl = "%s"\n' "$sep" "$MCP_NAME" "$MCP_URL" >>"$cfg" 2>/dev/null
-  }
-  if in_config || in_codex_list; then
+  if in_config; then
     skip "이미 등록됨"
-  elif [ "$has_codex" -eq 1 ] \
-       && timeout 60 codex mcp add "$MCP_NAME" --url "$MCP_URL" </dev/null >/dev/null 2>&1; then
-    ok "codex mcp add $MCP_NAME --url $MCP_URL"
-  elif in_config || in_codex_list; then
-    ok "등록됨"
-  elif append_mcp_table; then
-    ok "$cfg에 직접 추가"
-  else
-    warn "MCP 등록 실패 ($cfg에 쓸 수 없음). MCP 없이도 과제는 진행 가능"
-  fi
-  if [ "$has_codex" -eq 1 ]; then
-    if in_codex_list; then
-      ok "codex mcp list에서 확인됨"
+  elif ! command -v codex >/dev/null 2>&1; then
+    warn "이 터미널에 codex 명령이 없어 건너뛴다. MCP 없이도 진행할 수 있다(문서 조회는 내장 openai-docs 스킬)"
+  elif err="$(timeout 30 codex mcp add "$MCP_NAME" --url "$MCP_URL" </dev/null 2>&1)"; then
+    if in_config || in_codex_list; then
+      ok "codex mcp add $MCP_NAME --url $MCP_URL"
     else
-      warn "codex mcp list에 보이지 않는다. Codex를 다시 실행한 뒤 /mcp로 확인 (안 붙어도 과제는 진행 가능)"
+      warn "codex mcp add는 끝났지만 목록에서 확인되지 않는다. Codex에서 /mcp로 확인"
     fi
   else
-    warn "이 터미널에서 codex 명령을 찾지 못했다. Codex 화면에서 /mcp로 연결을 확인"
+    warn "MCP 등록 실패: $(head -n 2 <<<"$err" | tr '\n' ' ')"
+    warn "설정 파일은 직접 고치지 않는다. MCP 없이 진행해도 된다(문서 조회는 내장 openai-docs 스킬)"
   fi
 fi
 
@@ -221,35 +228,49 @@ if in_git; then
     git -C "$TARGET" config user.email 'candidate@localhost'
     ok "커밋 작성자 메일이 없어 이 저장소에만 'candidate@localhost'로 설정"
   fi
-  if [ "$DO_COMMIT" -eq 1 ]; then
-    paths=()
-    for p in "$agents_name" .agents/skills notes .gitignore; do
-      if [ -e "$TARGET/$p" ]; then paths+=("$p"); fi
+  if [ "$DO_COMMIT" -eq 0 ]; then
+    skip "--no-commit"
+  elif [ ${#WRITTEN[@]} -eq 0 ]; then
+    skip "이번 실행에서 바뀐 파일이 없어 커밋하지 않음"
+  else
+    added=()
+    for p in "${WRITTEN[@]}"; do
+      if git -C "$TARGET" check-ignore -q -- "$p" 2>/dev/null; then
+        warn "$p 는 .gitignore에 걸려 있어 커밋하지 않는다"
+      elif git -C "$TARGET" add -- "$p" 2>/dev/null; then
+        added+=("$p")
+      else
+        warn "git add 실패: $p"
+      fi
     done
-    if ! (cd "$TARGET" && git add -- "${paths[@]}"); then
-      warn "git add 실패: 직접 확인"
-    elif (cd "$TARGET" && git diff --cached --quiet -- "${paths[@]}"); then
+    if [ ${#added[@]} -eq 0 ]; then
+      skip "커밋할 파일 없음"
+    elif (cd "$TARGET" && git diff --cached --quiet -- "${added[@]}"); then
       skip "커밋할 변경 없음"
-    elif (cd "$TARGET" && git commit -q -m "$COMMIT_MSG" -- "${paths[@]}"); then
+    elif (cd "$TARGET" && git commit -q -m "$COMMIT_MSG" -- "${added[@]}"); then
       ok "커밋: $(git -C "$TARGET" log -1 --format='%h %s')"
     else
       warn "커밋 실패: git status로 확인 (설치 자체는 끝남)"
     fi
-  else
-    skip "--no-commit"
   fi
 else
-  warn "git 저장소가 아니다. 커밋 기록을 남기려면: bash $KIT_DIR/setup.sh --git-init"
+  warn "git 저장소가 아니다. 과제 폴더가 맞는지 먼저 확인하고, 맞는데 커밋 기록이 필요하면: bash $KIT_DIR/setup.sh --git-init"
 fi
 
 cat <<'EOF'
 
 설치 완료. 다음 순서:
-  1) Codex 실행. 이미 켜져 있었다면 종료 후 다시 실행해야 MCP가 붙는다.
-  2) /mcp 로 openaiDeveloperDocs 연결 확인, $ 를 입력해 스킬 6개 확인
-  3) $kickoff
+  1) Codex 실행. 이미 켜져 있었다면 종료 후 다시 실행해야 규칙·스킬·MCP가 붙는다.
+  2) $ 를 입력해 스킬 6개 확인, /mcp 로 openaiDeveloperDocs 확인
+  3) 첫 메시지: $kickoff 남은 시간 <타이머의 남은 분>분
 
 흐름: $kickoff → 단계마다 $verify → 맥락이 길면 $handoff 후 /new
-      → 약 90분에 새 세션에서 $cross-check → $explain → 160분에 $wrap-up
-      → 마지막 5분은 notes/DECISIONS.md 리스크 표를 직접 읽기
+      → 첫 E2E 뒤 $cross-check → $explain → 종료 20분 전 $wrap-up
 EOF
+if [ "$OVERRIDE" -eq 1 ]; then
+  cat <<'EOF'
+
+주의: AGENTS.override.md 때문에 키트 규칙이 자동으로 읽히지 않는다.
+      Codex 첫 메시지에 "AGENTS.md도 읽고 그 규칙을 따라 줘"를 함께 입력할 것.
+EOF
+fi
