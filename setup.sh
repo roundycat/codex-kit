@@ -267,6 +267,7 @@ cat <<'EOF'
 흐름: $kickoff → 단계마다 $verify → 맥락이 길면 $handoff 후 /new
       → 첫 E2E 뒤 $cross-check → $explain → 종료 20분 전 $wrap-up
 EOF
+printf '\n단계별 입력 예시와 문제 해결: %s/README.md\n' "$KIT_DIR"
 if [ "$OVERRIDE" -eq 1 ]; then
   cat <<'EOF'
 
