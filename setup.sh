@@ -271,6 +271,6 @@ if [ "$OVERRIDE" -eq 1 ]; then
   cat <<'EOF'
 
 주의: AGENTS.override.md 때문에 키트 규칙이 자동으로 읽히지 않는다.
-      Codex 첫 메시지에 "AGENTS.md도 읽고 그 규칙을 따라 줘"를 함께 입력할 것.
+      매 세션(/new 포함) 첫 메시지에 "AGENTS.md도 읽고 그 규칙을 따라 줘"를 함께 입력할 것.
 EOF
 fi

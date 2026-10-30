@@ -18,7 +18,7 @@ description: 세션 인계. 대화가 길어져 맥락이 흐려지기 전, 또�
    - 알려진 문제와 함정: 시도했다가 실패한 것 포함
    - 실행·검증 명령: 그대로 복사해 쓸 수 있게
    - 남은 시간 기준 우선순위
-3. **커밋**: `git add notes/HANDOFF.md && git commit -m "docs: handoff"` (push 금지)
+3. **커밋**: `git add notes/HANDOFF.md && git commit -m "docs: <몇 단계까지> 인계 문서 작성" -- notes/HANDOFF.md` (push 금지)
 4. **안내**: 사용자에게 `/new`로 새 세션을 열고 "인계 받아서 이어서 진행"이라고 입력하라고 알려 준다.
 
 ## 이어받기
